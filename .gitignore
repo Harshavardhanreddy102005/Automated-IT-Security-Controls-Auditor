@@ -1,0 +1,31 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# CPython cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environments
+.env
+.venv/
+env/
+venv/
+ENV/
+
+# IDE files
+.vscode/
+.idea/
+
+# Audit Reports (keep reports folder via .gitkeep, ignore generated scans)
+reports/*.html
+reports/*.json
+reports/*.txt
+!reports/.gitkeep
+
+# Operating System files
+Thumbs.db
+[Dd]esktop.ini
+.DS_Store

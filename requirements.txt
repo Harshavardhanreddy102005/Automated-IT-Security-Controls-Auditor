@@ -1,0 +1,4 @@
+# Automated IT Security Controls Auditor
+# Core auditor relies exclusively on the Python standard library (Python >= 3.8).
+# Optional development and testing dependencies:
+pytest>=7.0.0
