@@ -1,7 +1,7 @@
 """Windows Security Audit Policy configuration check."""
 
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from auditor.checks.base import BaseCheck
 from auditor.config import AuditConfig
@@ -37,8 +37,6 @@ class AuditPolicyCheck(BaseCheck):
             if not line_str or line_str.startswith("Category") or line_str.startswith("System audit"):
                 continue
 
-            # Tab or multi-space separated: "Subcategory name       Setting"
-            # Settings typically: "Success and Failure", "Success", "Failure", "No Auditing"
             match = re.match(r"^(.+?)\s{2,}(Success and Failure|Success|Failure|No Auditing)$", line_str, re.IGNORECASE)
             if match:
                 subcat = match.group(1).strip()
@@ -55,7 +53,6 @@ class AuditPolicyCheck(BaseCheck):
             f"({', '.join(config.required_audit_subcategories)}), capturing at least Success or Failure events."
         )
 
-        # Handle lack of elevation gracefully without crashing or faking results
         if error == "ELEVATION_REQUIRED" or (not is_elevated() and not policies):
             return Finding(
                 check_id=self.check_id,
@@ -81,6 +78,9 @@ class AuditPolicyCheck(BaseCheck):
                     "Querying auditpol directly requires an elevated administrative security token. "
                     "Non-elevated processes cannot query system audit policies."
                 ),
+                short_finding="Audit policy inspection requires administrative privileges (SeSecurityPrivilege) to query auditpol.",
+                impact="Without verified audit logging, unauthorized logons, privilege escalation attempts, and account modifications cannot be traced.",
+                suggested_verification="Rerun 'python -m auditor scan' from an elevated PowerShell prompt ('Run as Administrator').",
             )
 
         if not policies:
@@ -94,16 +94,17 @@ class AuditPolicyCheck(BaseCheck):
                 explanation="Failed to parse system audit policies from auditpol output.",
                 recommended_remediation="Verify auditpol command availability and system language settings.",
                 verification_limitations="Audit policy output could not be mapped to known categories.",
+                short_finding="Unable to parse system audit policies from auditpol output.",
+                impact="Unverified audit configurations impede security event monitoring and compliance tracking.",
+                suggested_verification="Execute 'auditpol /get /category:*' manually in an elevated prompt.",
             )
 
-        # If policies were retrieved successfully:
         missing_or_disabled: List[str] = []
         observed_matching: Dict[str, str] = {}
 
         for req in config.required_audit_subcategories:
             setting = policies.get(req)
             if not setting:
-                # Look for partial matches (e.g. "User Account Management")
                 matches = [v for k, v in policies.items() if req.lower() in k.lower()]
                 setting = matches[0] if matches else None
 
@@ -134,11 +135,14 @@ class AuditPolicyCheck(BaseCheck):
                     "Without event auditing, unauthorized access attempts and account modifications will not appear in the Security Event Log."
                 ),
                 recommended_remediation=(
-                    "Enable Success and Failure auditing for the missing categories using: "
+                    "Enable Success and Failure auditing for missing categories using: "
                     "`auditpol /set /subcategory:\"<name>\" /success:enable /failure:enable` "
                     "or enforce through Advanced Audit Policy Configuration via GPO."
                 ),
                 verification_limitations="Evaluates local audit policy subcategories reported by auditpol.",
+                short_finding=f"Audit subcategories disabled: {', '.join(missing_or_disabled)}.",
+                impact="Disabling logon or account audit logging prevents detection of brute-force attacks and privilege escalation.",
+                suggested_verification="Run 'auditpol /get /category:*' in an elevated terminal and check subcategory states.",
             )
 
         return Finding(
@@ -151,4 +155,7 @@ class AuditPolicyCheck(BaseCheck):
             explanation="All inspected security audit subcategories have active auditing configured.",
             recommended_remediation="Maintain existing audit policy and configure SIEM or event forwarding to monitor Security log Event IDs 4624, 4625, 4720, 4728.",
             verification_limitations="Evaluates audit subcategory configuration. Does not verify event log size limits, retention policies, or SIEM ingestion.",
+            short_finding="All inspected security audit subcategories have active auditing configured.",
+            impact="Active audit policies generate high-fidelity telemetry for incident detection and forensic analysis.",
+            suggested_verification="Review Event Viewer -> Windows Logs -> Security for Event IDs 4624 (Logon) and 4625 (Failed Logon).",
         )

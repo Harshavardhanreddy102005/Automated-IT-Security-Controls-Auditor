@@ -44,7 +44,7 @@ class TestReporting(unittest.TestCase):
         self.assertIn("DEMO-SEC-NODE01", html_str)
         self.assertIn("Automated IT Security Controls Auditor", html_str)
         self.assertIn("Prioritized Remediation Action Plan", html_str)
-        self.assertIn("Audit Scope & Methodological Limitations", html_str)
+        self.assertIn("Assessment Scope &amp; Limitations", html_str)
         # Check badges
         self.assertIn("PASS", html_str)
         self.assertIn("FAIL", html_str)

@@ -18,7 +18,7 @@ class TestIntegration(unittest.TestCase):
         """Run an end-to-end audit scan and thoroughly validate generated artifacts."""
         with tempfile.TemporaryDirectory() as temp_dir:
             exit_code = main(["scan", "--output", temp_dir, "--format", "all"])
-            self.assertEqual(exit_code, 0)
+            self.assertIn(exit_code, [0, 1], "Exit code must be 0 (no failures) or 1 (one or more controls failed)")
 
             files = os.listdir(temp_dir)
             html_files = [os.path.join(temp_dir, f) for f in files if f.endswith(".html")]

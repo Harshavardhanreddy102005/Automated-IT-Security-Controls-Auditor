@@ -1,9 +1,9 @@
 """Data models, enumerations, and structures for audit findings and reports."""
 
 from dataclasses import dataclass, field, asdict
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
-from datetime import datetime, timezone
 
 
 class CheckStatus(str, Enum):
@@ -36,6 +36,15 @@ class Finding:
     explanation: str
     recommended_remediation: str
     verification_limitations: str
+    short_finding: str = ""
+    impact: str = ""
+    suggested_verification: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.short_finding:
+            # Generate a concise sentence from explanation if not explicitly set
+            sentences = [s.strip() for s in self.explanation.split(". ") if s.strip()]
+            self.short_finding = (sentences[0] + ".") if sentences else self.explanation
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert finding to a JSON-serializable dictionary."""
@@ -43,11 +52,14 @@ class Finding:
             "check_id": self.check_id,
             "control_name": self.control_name,
             "status": self.status.value,
+            "risk_level": self.risk_level.value,
+            "short_finding": self.short_finding,
+            "explanation": self.explanation,
             "observed_evidence": self.observed_evidence,
             "expected_requirement": self.expected_requirement,
-            "risk_level": self.risk_level.value,
-            "explanation": self.explanation,
+            "impact": self.impact,
             "recommended_remediation": self.recommended_remediation,
+            "suggested_verification": self.suggested_verification,
             "verification_limitations": self.verification_limitations,
         }
 
@@ -107,6 +119,9 @@ class AuditReport:
     system_info: SystemInfo
     findings: List[Finding]
     summary: AuditSummary
+    duration_seconds: float = 0.0
+    report_id: str = ""
+    author: str = "HARSHA VARDHAN REDDY B"
     limitations: List[str] = field(default_factory=lambda: [
         "This tool is an educational IT security audit utility, not a penetration test or certified compliance platform.",
         "Checks are conducted using read-only host queries and inspect local configurations.",
@@ -114,12 +129,21 @@ class AuditReport:
         "A passing result indicates the specific configuration met the baseline rule at time of execution, not that the system is fully secure.",
     ])
 
+    def __post_init__(self) -> None:
+        if not self.report_id:
+            # Generate clean report identifier from timestamp
+            slug = self.timestamp.replace("-", "").replace(":", "").replace(".", "")[:15]
+            self.report_id = f"AUD-{slug}"
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "metadata": {
+                "report_id": self.report_id,
                 "tool_name": "Automated IT Security Controls Auditor",
                 "tool_version": self.tool_version,
+                "author": self.author,
                 "timestamp": self.timestamp,
+                "duration_seconds": self.duration_seconds,
             },
             "system_info": self.system_info.to_dict(),
             "summary": self.summary.to_dict(),

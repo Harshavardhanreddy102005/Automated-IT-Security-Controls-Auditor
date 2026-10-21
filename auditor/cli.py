@@ -2,32 +2,164 @@
 
 import argparse
 from datetime import datetime, timezone
+import json
 import os
 import platform
 import shutil
 import sys
-from typing import List, Optional
+import textwrap
+from typing import Any, Dict, List, Optional
 
 from auditor import __version__
 from auditor.engine import AuditEngine
-from auditor.models import CheckStatus, RiskLevel
+from auditor.models import AuditReport, CheckStatus, Finding, RiskLevel
 from auditor.reporting import HtmlReporter, JsonReporter
 from auditor.system import is_elevated, is_windows
 
 
-def print_banner() -> None:
-    banner = f"""
-======================================================================
-  Automated IT Security Controls Auditor v{__version__}
-  Cyber Risk & Security Controls Assessment Tool
-======================================================================
-"""
-    print(banner)
+def supports_color() -> bool:
+    """Return True if stdout supports ANSI color output."""
+    if "NO_COLOR" in os.environ or os.environ.get("TERM") == "dumb":
+        return False
+    return sys.stdout.isatty()
+
+
+def colorize(text: str, color_code: str) -> str:
+    """Wrap text in ANSI escape sequence if supported."""
+    if not supports_color():
+        return text
+    return f"\033[{color_code}m{text}\033[0m"
+
+
+def get_terminal_width() -> int:
+    """Detect current terminal width safely with 80-column fallback."""
+    try:
+        cols = shutil.get_terminal_size((80, 24)).columns
+        return max(60, min(cols, 120))
+    except Exception:
+        return 80
+
+
+def format_evidence_concise(evidence: Any) -> str:
+    """Format evidence into a concise one or two line summary suitable for CLI."""
+    if isinstance(evidence, dict):
+        # Extract the most salient keys
+        items = []
+        for k, v in evidence.items():
+            if k in ("error", "traceback"):
+                items.append(f"{k}: {v}")
+            elif isinstance(v, (str, int, float, bool)):
+                items.append(f"{k}: {v}")
+            elif isinstance(v, list):
+                items.append(f"{k}: {len(v)} item(s)")
+            elif isinstance(v, dict):
+                sub_items = [f"{sk}={sv}" for sk, sv in list(v.items())[:2]]
+                items.append(f"{k}=({', '.join(sub_items)})")
+        return ", ".join(items[:5])
+    return str(evidence).strip()
+
+
+def wrap_labeled_text(label: str, text: str, width: int, indent_len: int = 13) -> str:
+    """
+    Wrap text so subsequent lines are indented beneath the associated label.
+    Example:
+      Label      First line of wrapped text...
+                 Second line aligned here...
+    """
+    padded_label = f"  {label:<10} "
+    indent_space = " " * indent_len
+    available_width = max(30, width - indent_len)
+    
+    wrapped_lines = textwrap.wrap(text, width=available_width)
+    if not wrapped_lines:
+        return padded_label
+
+    output = padded_label + wrapped_lines[0]
+    for line in wrapped_lines[1:]:
+        output += "\n" + indent_space + line
+    return output
+
+
+def print_compact_summary(report: AuditReport, width: int) -> None:
+    """Print a clean, restrained executive summary to the terminal."""
+    s = report.summary
+    info = report.system_info
+
+    run_mode = "Elevated (Administrator)" if info.is_elevated else "Standard user"
+
+    print("AUTOMATED IT SECURITY CONTROLS AUDITOR")
+    print(f"Version {report.tool_version}")
+    print()
+    print(f"Host       : {info.hostname}")
+    print(f"Platform   : {info.os_name} {info.os_release}")
+    print(f"Run mode   : {run_mode}")
+    print(f"Duration   : {report.duration_seconds} seconds")
+    print()
+    print("AUDIT SUMMARY")
+    print(f"Controls checked : {s.total_checks}")
+    print(f"Passed           : {s.pass_count}")
+    print(f"Failed           : {s.fail_count}")
+    print(f"Needs review     : {s.review_count}")
+    print(f"Could not verify : {s.error_count}")
+    if s.not_applicable_count > 0:
+        print(f"Not applicable   : {s.not_applicable_count}")
+    print()
+    print("Risk overview")
+    if s.risk_breakdown.get(RiskLevel.CRITICAL.value, 0) > 0:
+        print(f"Critical         : {s.risk_breakdown[RiskLevel.CRITICAL.value]}")
+    print(f"High             : {s.risk_breakdown.get(RiskLevel.HIGH.value, 0)}")
+    print(f"Medium           : {s.risk_breakdown.get(RiskLevel.MEDIUM.value, 0)}")
+    print(f"Low              : {s.risk_breakdown.get(RiskLevel.LOW.value, 0)}")
+    print()
+
+
+def print_finding(f: Finding, width: int, verbose: bool = False) -> None:
+    """Print an individual finding with clean visual hierarchy and wrapped indentation."""
+    status_colors = {
+        CheckStatus.PASS: "32",            # Green
+        CheckStatus.FAIL: "31;1",          # Bold Red
+        CheckStatus.REVIEW: "33;1",        # Bold Yellow
+        CheckStatus.ERROR: "35;1",         # Bold Magenta
+        CheckStatus.NOT_APPLICABLE: "37",  # Grey/White
+    }
+
+    badge = f"[{f.status.value}]"
+    badge_colored = colorize(badge, status_colors.get(f.status, "0"))
+    
+    header = f"{badge_colored} {f.check_id} | {f.control_name}"
+    print(header)
+
+    # Risk level styling
+    risk_label = f.risk_level.value.capitalize()
+    print(wrap_labeled_text("Risk", risk_label, width))
+
+    # Finding summary
+    finding_text = f.short_finding or f.explanation
+    print(wrap_labeled_text("Finding", finding_text, width))
+
+    # Evidence
+    concise_ev = format_evidence_concise(f.observed_evidence)
+    print(wrap_labeled_text("Evidence", concise_ev, width))
+
+    # Action / Remediation
+    action_text = f.recommended_remediation
+    print(wrap_labeled_text("Action", action_text, width))
+
+    if verbose:
+        print(wrap_labeled_text("Required", f.expected_requirement, width))
+        if f.impact:
+            print(wrap_labeled_text("Impact", f.impact, width))
+        if f.suggested_verification:
+            print(wrap_labeled_text("Verify", f.suggested_verification, width))
+        if f.verification_limitations:
+            print(wrap_labeled_text("Boundary", f.verification_limitations, width))
+
+    print()
 
 
 def run_doctor() -> int:
     """Run diagnostic checks on environment, platform, commands, and permissions."""
-    print("\nRunning environment diagnostics (auditor doctor)...\n")
+    print("AUTOMATED IT SECURITY CONTROLS AUDITOR - ENVIRONMENT DIAGNOSTICS\n")
 
     issues = 0
     warnings = 0
@@ -89,80 +221,57 @@ def run_doctor() -> int:
         print(f"  [FAIL] Report Directory: Cannot write to '{test_dir}': {exc}")
         issues += 1
 
-    print("\n----------------------------------------------------------------------")
+    print()
     if issues == 0 and warnings == 0:
-        print("  Diagnostic Status: ALL CHECKS PASSED. Ready for live audit scan.")
+        print("Diagnostic Status: ALL CHECKS PASSED. Ready for live audit scan.\n")
     elif issues == 0:
-        print("  Diagnostic Status: READY WITH WARNINGS. Scan can execute normally.")
+        print("Diagnostic Status: READY WITH WARNINGS. Scan can execute normally.\n")
     else:
-        print("  Diagnostic Status: ISSUES DETECTED. Please address the errors above.")
-    print("----------------------------------------------------------------------\n")
+        print("Diagnostic Status: ISSUES DETECTED. Please address the errors above.\n")
 
     return 1 if issues > 0 else 0
 
 
 def run_scan(args: argparse.Namespace) -> int:
-    """Execute the security audit scan and write reports."""
-    print_banner()
+    """Execute the security audit scan, render findings, and write reports."""
+    width = get_terminal_width()
 
-    # Handle platform check
+    # Handle platform notice
     if not is_windows() and not args.demo:
-        print(f"[!] Warning: Host operating system '{platform.system()}' is not Windows.")
-        print("    Windows Security Controls Auditor is tailored for Windows workstations and servers.")
-        print("    Executing in non-Windows mode (checks will return NOT_APPLICABLE).")
-        print("    Tip: Use 'python -m auditor scan --demo' to generate a sample report with simulated findings.\n")
+        print(f"[Notice] Host operating system '{platform.system()}' is not Windows.")
+        print("         Windows Security Controls Auditor evaluates Windows systems.")
+        print("         Executing in non-Windows mode (checks will return NOT_APPLICABLE).")
+        print("         Tip: Use '--demo' to generate a sample report with simulated findings.\n")
 
-    print(f"[*] Initializing security audit scan at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}...")
-
+    # Execute audit or generate demo report
     if args.demo:
-        print("[*] Running in DEMO mode with representative sample control findings...")
         report = AuditEngine.get_demo_report()
     else:
         engine = AuditEngine()
         report = engine.run_audit()
 
-    s = report.summary
-    info = report.system_info
+    # 1. Print compact summary
+    print_compact_summary(report, width)
 
-    print(f"[*] Audit complete for host '{info.hostname}'.")
-    print(f"[*] Execution context: {'Elevated (Administrator)' if info.is_elevated else 'Standard User'}\n")
+    # 2. Print findings (unless --quiet or --summary-only is set)
+    if not args.quiet:
+        print("DETAILED FINDINGS")
+        print("-" * min(width, 70))
 
-    # Print summary table
-    print("======================================================================")
-    print("                       AUDIT SUMMARY RESULTS                          ")
-    print("======================================================================")
-    print(f"  Total Controls Evaluated : {s.total_checks}")
-    print(f"  PASS                     : {s.pass_count}")
-    print(f"  FAIL                     : {s.fail_count}")
-    print(f"  REVIEW (Human Assessment): {s.review_count}")
-    print(f"  ERROR (Privilege/Exec)   : {s.error_count}")
-    print(f"  NOT APPLICABLE           : {s.not_applicable_count}")
-    print(f"  Control Pass Rate        : {s.compliance_score_percent}%")
-    print("----------------------------------------------------------------------")
-    print("  Risk Breakdown:")
-    for risk_label in (RiskLevel.CRITICAL.value, RiskLevel.HIGH.value, RiskLevel.MEDIUM.value, RiskLevel.LOW.value, RiskLevel.INFORMATIONAL.value):
-        cnt = s.risk_breakdown.get(risk_label, 0)
-        print(f"    {risk_label:<14}: {cnt}")
-    print("======================================================================\n")
+        # Order findings by actionable priority: FAIL, then REVIEW, then ERROR, then PASS, then NOT_APPLICABLE
+        status_order = {
+            CheckStatus.FAIL: 1,
+            CheckStatus.REVIEW: 2,
+            CheckStatus.ERROR: 3,
+            CheckStatus.PASS: 4,
+            CheckStatus.NOT_APPLICABLE: 5,
+        }
+        sorted_findings = sorted(report.findings, key=lambda f: status_order.get(f.status, 99))
 
-    # Print individual findings list
-    print("Detailed Findings:")
-    for f in report.findings:
-        status_symbol = {
-            CheckStatus.PASS: "[PASS]",
-            CheckStatus.FAIL: "[FAIL]",
-            CheckStatus.REVIEW: "[REVIEW]",
-            CheckStatus.ERROR: "[ERROR]",
-            CheckStatus.NOT_APPLICABLE: "[N/A]",
-        }.get(f.status, f"[{f.status.value}]")
+        for f in sorted_findings:
+            print_finding(f, width, verbose=args.verbose)
 
-        print(f"  {status_symbol:<8} {f.check_id:<11} {f.control_name}")
-        print(f"           Risk: {f.risk_level.value} | {f.explanation}")
-        if f.status in (CheckStatus.FAIL, CheckStatus.REVIEW, CheckStatus.ERROR):
-            print(f"           Remediation: {f.recommended_remediation}")
-        print()
-
-    # Generate Reports
+    # 3. Generate Reports
     out_dir = args.output
     os.makedirs(out_dir, exist_ok=True)
     timestamp_slug = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -171,24 +280,36 @@ def run_scan(args: argparse.Namespace) -> int:
     json_file = os.path.join(out_dir, f"audit_report_{timestamp_slug}.json")
 
     fmt = args.format.lower()
-    generated_files = []
+    html_generated = None
+    json_generated = None
 
     if fmt in ("all", "html"):
         HtmlReporter.generate(report, output_path=html_file)
-        generated_files.append(html_file)
+        html_generated = html_file
 
     if fmt in ("all", "json"):
         JsonReporter.generate(report, output_path=json_file)
-        generated_files.append(json_file)
+        json_generated = json_file
 
-    print("======================================================================")
-    print("                       GENERATED AUDIT REPORTS                        ")
-    print("======================================================================")
-    for path in generated_files:
-        abs_path = os.path.abspath(path)
-        print(f"  -> {abs_path}")
-    print("======================================================================\n")
+    # 4. Print report location and copy-paste viewer command
+    print("REPORTS GENERATED")
+    if html_generated:
+        print(f"  HTML : {os.path.abspath(html_generated)}")
+    if json_generated:
+        print(f"  JSON : {os.path.abspath(json_generated)}")
+    print()
 
+    if html_generated:
+        # Provide unambiguous PowerShell command that never fails with wildcards
+        rel_html = os.path.relpath(html_generated)
+        print("To view report in browser (PowerShell):")
+        print(f"  Invoke-Item \"{rel_html}\"")
+        print()
+
+    # 5. Determine exit code:
+    # 0 if no FAIL controls; 1 if one or more controls FAIL
+    if report.summary.fail_count > 0:
+        return 1
     return 0
 
 
@@ -201,6 +322,8 @@ def build_parser() -> argparse.ArgumentParser:
             "Examples:\n"
             "  python -m auditor doctor\n"
             "  python -m auditor scan\n"
+            "  python -m auditor scan --verbose\n"
+            "  python -m auditor scan --quiet\n"
             "  python -m auditor scan --output reports --format all\n"
             "  python -m auditor scan --demo\n"
         ),
@@ -232,6 +355,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--demo",
         action="store_true",
         help="Generate a demo audit report with simulated findings for evaluation or non-Windows hosts",
+    )
+    scan_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Display extended finding details, impacts, and verification limits in terminal",
+    )
+    scan_parser.add_argument(
+        "-q", "--quiet", "--summary-only",
+        dest="quiet",
+        action="store_true",
+        help="Display compact summary and report paths only",
     )
 
     # doctor subcommand

@@ -7,5 +7,5 @@ identifies potential security gaps, and produces professional HTML & JSON report
 """
 
 __version__ = "1.0.0"
-__author__ = "Jothish"
+__author__ = "HARSHA VARDHAN REDDY B"
 __license__ = "MIT"

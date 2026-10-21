@@ -29,13 +29,11 @@ class FirewallCheck(BaseCheck):
 
         for line in result.stdout.splitlines():
             line = line.strip()
-            # Match profile headers like "Domain Profile Settings:"
             header_match = re.match(r"^(Domain|Private|Public)\s+Profile\s+Settings:?", line, re.IGNORECASE)
             if header_match:
                 current_profile = header_match.group(1).capitalize()
                 continue
 
-            # Match "State ON" or "State OFF"
             if current_profile and re.search(r"\bState\b", line, re.IGNORECASE):
                 parts = line.split()
                 if len(parts) >= 2:
@@ -81,6 +79,9 @@ class FirewallCheck(BaseCheck):
                 explanation="Unable to query Windows Firewall profile status via netsh or PowerShell.",
                 recommended_remediation="Verify that the Windows Firewall service (mpssvc) is running and accessible.",
                 verification_limitations="Execution failed to extract profile states.",
+                short_finding="Unable to query Windows Firewall profile states via netsh or PowerShell.",
+                impact="If the host firewall service is stopped or unresponsive, network ports may be unprotected.",
+                suggested_verification="Verify the mpssvc service is running with 'Get-Service mpssvc' in PowerShell.",
             )
 
         disabled_profiles: List[str] = []
@@ -98,30 +99,39 @@ class FirewallCheck(BaseCheck):
         if disabled_profiles:
             status = CheckStatus.FAIL
             risk = RiskLevel.HIGH
+            short_finding = f"Firewall profile(s) disabled: {', '.join(disabled_profiles)}."
             explanation = (
                 f"One or more required Windows Firewall profiles are disabled: {', '.join(disabled_profiles)}. "
                 "Disabling firewall profiles leaves the system vulnerable to unauthorized network access and lateral movement."
             )
             remediation = (
                 f"Enable the disabled firewall profile(s) ({', '.join(disabled_profiles)}) using: "
-                "`netsh advfirewall set allprofiles state on` or via the Windows Defender Firewall Control Panel."
+                "`netsh advfirewall set allprofiles state on` or via Windows Defender Firewall with Advanced Security."
             )
+            impact = "Disabled firewall profiles permit unmonitored inbound traffic, significantly increasing exposure to network worm replication and port scanning."
+            verification = "Execute 'netsh advfirewall show allprofiles state' and ensure each profile reports State ON."
         elif missing_profiles:
             status = CheckStatus.REVIEW
             risk = RiskLevel.MEDIUM
+            short_finding = f"Profiles could not be verified: {', '.join(missing_profiles)}."
             explanation = (
                 f"Some required firewall profiles could not be identified: {', '.join(missing_profiles)}. "
                 f"Observed profiles: {profiles}."
             )
             remediation = "Verify network location settings and ensure Domain, Private, and Public profiles are configured."
+            impact = "Unidentified network profiles may allow untrusted networks to be assigned permissive traffic policies."
+            verification = "Run 'Get-NetFirewallProfile' to inspect active network profile associations."
         else:
             status = CheckStatus.PASS
             risk = RiskLevel.INFORMATIONAL
+            short_finding = "All required Windows Firewall profiles (Domain, Private, Public) are active and enabled."
             explanation = (
                 f"All required Windows Firewall profiles ({', '.join(config.firewall_required_profiles)}) "
                 "are active and enabled."
             )
             remediation = "No remediation needed. Maintain current firewall enforcement via Group Policy or Intune."
+            impact = "Inbound and outbound network connections are filtered according to defined firewall rules."
+            verification = "Periodically confirm profile states via Group Policy Objects or Intune endpoint security baselines."
 
         return Finding(
             check_id=self.check_id,
@@ -133,4 +143,7 @@ class FirewallCheck(BaseCheck):
             explanation=explanation,
             recommended_remediation=remediation,
             verification_limitations="Read-only query of profile states. Individual firewall inbound/outbound rules and port exceptions were not evaluated.",
+            short_finding=short_finding,
+            impact=impact,
+            suggested_verification=verification,
         )

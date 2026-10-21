@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 import platform
+import time
 from typing import List, Optional
 
 from auditor import __version__
@@ -34,6 +35,7 @@ class AuditEngine:
         """
         Execute all configured security checks and compile the final audit report.
         """
+        start_time = time.perf_counter()
         system_info = get_system_info(python_version=platform.python_version())
         timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -42,15 +44,19 @@ class AuditEngine:
             finding = check.run(self.config)
             findings.append(finding)
 
+        duration = round(time.perf_counter() - start_time, 2)
         summary = self._calculate_summary(findings)
 
-        return AuditReport(
+        report = AuditReport(
             tool_version=__version__,
             timestamp=timestamp,
             system_info=system_info,
             findings=findings,
             summary=summary,
+            duration_seconds=duration,
+            author="HARSHA VARDHAN REDDY B",
         )
+        return report
 
     def _calculate_summary(self, findings: List[Finding]) -> AuditSummary:
         """Calculate counts, risk distribution, and posture score from findings."""
@@ -61,7 +67,6 @@ class AuditEngine:
         na_count = sum(1 for f in findings if f.status == CheckStatus.NOT_APPLICABLE)
         total = len(findings)
 
-        # Applicable checks are all checks that apply to this environment
         applicable = total - na_count
         score = round((pass_count / applicable * 100.0), 1) if applicable > 0 else 0.0
 
@@ -112,6 +117,9 @@ class AuditEngine:
                 explanation="All required Windows Firewall profiles are active and enabled.",
                 recommended_remediation="No remediation needed. Maintain current firewall enforcement via Group Policy.",
                 verification_limitations="Read-only query of profile states. Individual rules not inspected.",
+                short_finding="All required Windows Firewall profiles (Domain, Private, Public) are active and enabled.",
+                impact="Inbound and outbound network connections are filtered according to defined firewall rules.",
+                suggested_verification="Execute 'netsh advfirewall show allprofiles state' to verify profile states.",
             ),
             Finding(
                 check_id="WIN-AV-01",
@@ -130,6 +138,9 @@ class AuditEngine:
                 explanation="Active antivirus protection verified with real-time scanning enabled.",
                 recommended_remediation="Maintain regular signature updates and real-time monitoring.",
                 verification_limitations="Verified via Defender API.",
+                short_finding="Active antivirus protection verified: Microsoft Defender Antivirus with real-time protection enabled.",
+                impact="Real-time scanning inspects files upon execution, providing critical frontline defense.",
+                suggested_verification="Run 'Get-MpComputerStatus' and verify RealTimeProtectionEnabled is True.",
             ),
             Finding(
                 check_id="WIN-PWD-01",
@@ -142,9 +153,12 @@ class AuditEngine:
                 },
                 expected_requirement="Minimum password length >= 8 chars, Account lockout threshold between 1 and 10 attempts.",
                 risk_level=RiskLevel.HIGH,
-                explanation="Local account policy does not meet baseline: Minimum password length is 0 characters (expected >= 8).",
+                explanation="Local account policy does not meet baseline: Minimum password length is 0 characters (expected >= 8). Lockout threshold is 10 attempts.",
                 recommended_remediation="Configure local account policies using secpol.msc or deploy GPO to enforce minimum password length.",
-                verification_limitations="Evaluates local SAM database account policy.",
+                verification_limitations="Evaluates local SAM database account policy via net accounts.",
+                short_finding="Minimum password length is 0 (configured baseline requires >= 8). Lockout threshold is 10 attempts.",
+                impact="Permitting zero-length passwords allows trivial passwords that can be easily guessed.",
+                suggested_verification="Run 'net accounts' in Command Prompt to confirm updated password length.",
             ),
             Finding(
                 check_id="WIN-ADM-01",
@@ -153,27 +167,33 @@ class AuditEngine:
                 observed_evidence={
                     "group_name": "Administrators",
                     "member_count": 2,
-                    "members": ["Administrator", "jothish_admin"],
+                    "members": ["Administrator", "harsha_admin"],
                 },
                 expected_requirement="Only approved accounts should hold local Administrator privileges.",
                 risk_level=RiskLevel.MEDIUM,
-                explanation="Local Administrators group contains unverified account: jothish_admin. Account requires access justification review.",
+                explanation="Local Administrators group contains member(s): Administrator, harsha_admin. Accounts require access justification review.",
                 recommended_remediation="Review local administrator group members with the system owner against authorized access list.",
                 verification_limitations="Enumerated local group members.",
+                short_finding="Local Administrators group contains 2 member(s): Administrator, harsha_admin. Access review recommended.",
+                impact="Unnecessary administrative accounts expand the attack surface for credential theft.",
+                suggested_verification="Confirm business justification with asset owners.",
             ),
             Finding(
                 check_id="WIN-UPD-01",
                 control_name="Operating System Patching & Update Status",
                 status=CheckStatus.PASS,
                 observed_evidence={
-                    "latest_patch": {"hotfix_id": "KB5127648", "installed_on": "2026-10-16"},
+                    "latest_recorded_hotfix": {"hotfix_id": "KB5127648", "installed_on": "2026-10-16"},
                     "patch_age_days": 5,
                 },
-                expected_requirement="Recent security patch installed within 60 days.",
+                expected_requirement="Recent security patch recorded within 60 days.",
                 risk_level=RiskLevel.INFORMATIONAL,
-                explanation="Latest security update (KB5127648) was installed 5 days ago, meeting currency baseline.",
+                explanation="Most recently recorded hotfix (KB5127648) was installed 5 days ago, meeting currency baseline.",
                 recommended_remediation="Maintain scheduled monthly patch cycle.",
-                verification_limitations="Evaluates installed hotfix entries reported by CBS/WUA.",
+                verification_limitations="Evaluates installed hotfix entries reported by CBS store.",
+                short_finding="Most recently recorded hotfix (KB5127648) installed 5 days ago.",
+                impact="Regular monthly patching resolves known security flaws.",
+                suggested_verification="Periodically review installed updates via 'Get-HotFix'.",
             ),
             Finding(
                 check_id="WIN-AUD-01",
@@ -185,6 +205,9 @@ class AuditEngine:
                 explanation="Audit policy inspection requires administrative elevation (SeSecurityPrivilege).",
                 recommended_remediation="Execute audit scan from an elevated prompt or configure audit policy via GPO.",
                 verification_limitations="Non-elevated processes cannot query auditpol.",
+                short_finding="Audit policy inspection requires administrative privileges (SeSecurityPrivilege) to query auditpol.",
+                impact="Without verified audit logging, unauthorized logons and privilege escalation cannot be traced.",
+                suggested_verification="Rerun 'python -m auditor scan' from an elevated PowerShell prompt ('Run as Administrator').",
             ),
         ]
 
@@ -211,4 +234,7 @@ class AuditEngine:
             system_info=demo_sysinfo,
             findings=sample_findings,
             summary=summary,
+            duration_seconds=3.2,
+            report_id="AUD-DEMO-SAMPLE",
+            author="HARSHA VARDHAN REDDY B",
         )

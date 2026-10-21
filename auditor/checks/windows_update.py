@@ -105,7 +105,6 @@ class WindowsUpdateCheck(BaseCheck):
                     min_age_days = max(0, age)
                     latest_patch = hf
 
-        # Remove parsed_dt before returning evidence
         clean_hotfixes = []
         for h in hotfixes:
             clean_copy = {k: v for k, v in h.items() if k != "parsed_dt"}
@@ -123,7 +122,6 @@ class WindowsUpdateCheck(BaseCheck):
 
         try:
             data = json.loads(result.stdout)
-            # Status: 1=Stopped, 4=Running. StartType: 2=Automatic, 3=Manual, 4=Disabled
             status_map = {1: "Stopped", 2: "StartPending", 3: "StopPending", 4: "Running"}
             start_map = {2: "Automatic", 3: "Manual", 4: "Disabled"}
 
@@ -142,18 +140,17 @@ class WindowsUpdateCheck(BaseCheck):
         service_info = self._query_update_service()
 
         evidence: Dict[str, Any] = {
-            "latest_patch": latest_patch,
+            "latest_recorded_hotfix": latest_patch,
             "patch_age_days": patch_age_days,
             "recent_hotfixes": hotfixes,
             "windows_update_service": service_info,
         }
 
         expected_req = (
-            f"Recent security patch installed within {config.patch_max_age_days_pass} days; "
+            f"Recent security patch recorded within {config.patch_max_age_days_pass} days; "
             "Windows Update service must not be disabled."
         )
 
-        # 1. Check if Windows Update service is disabled
         if str(service_info.get("start_type", "")).lower() == "disabled":
             return Finding(
                 check_id=self.check_id,
@@ -164,13 +161,15 @@ class WindowsUpdateCheck(BaseCheck):
                 risk_level=RiskLevel.HIGH,
                 explanation=(
                     "The Windows Update service (wuauserv) is set to 'Disabled'. "
-                    "This prevents the operating system from receiving critical security patches and definition updates."
+                    "This prevents the operating system from receiving critical security updates and definition files."
                 ),
                 recommended_remediation="Set the Windows Update service startup type to 'Manual' or 'Automatic' via Services.msc or Group Policy.",
                 verification_limitations="Service status verified via Get-Service.",
+                short_finding="Windows Update service (wuauserv) is Disabled.",
+                impact="Disabling the update service leaves the operating system permanently unable to patch disclosed security vulnerabilities.",
+                suggested_verification="Run 'Get-Service wuauserv' to verify Status is Running or StartType is Manual/Automatic.",
             )
 
-        # 2. Check hotfix patch age
         if not hotfixes or latest_patch is None or patch_age_days is None:
             return Finding(
                 check_id=self.check_id,
@@ -180,11 +179,14 @@ class WindowsUpdateCheck(BaseCheck):
                 expected_requirement=expected_req,
                 risk_level=RiskLevel.MEDIUM,
                 explanation=(
-                    "No recent hotfix installation dates could be parsed from the system. "
+                    "No recent hotfix installation dates could be parsed from the Windows servicing store. "
                     "This may occur on newly provisioned machines, custom enterprise images, or when updates are delivered via WSUS/SCCM."
                 ),
                 recommended_remediation="Inspect Windows Update history in Settings or verify compliance through your enterprise patch management console.",
                 verification_limitations="Get-HotFix returned no records or unparseable timestamps.",
+                short_finding="No installed hotfix dates could be parsed from the Windows servicing store.",
+                impact="Without verified patch history, the vulnerability status of the host cannot be reliably determined.",
+                suggested_verification="Inspect Settings -> Windows Update -> Update history manually or check WSUS / Intune reporting.",
             )
 
         if patch_age_days <= config.patch_max_age_days_pass:
@@ -196,12 +198,18 @@ class WindowsUpdateCheck(BaseCheck):
                 expected_requirement=expected_req,
                 risk_level=RiskLevel.INFORMATIONAL,
                 explanation=(
-                    f"Latest verified security update ({latest_patch['hotfix_id']}) was installed on "
-                    f"{latest_patch['installed_on']} ({patch_age_days} days ago), satisfying the "
-                    f"{config.patch_max_age_days_pass}-day patch currency baseline."
+                    f"Most recently recorded hotfix is {latest_patch['hotfix_id']}, installed on "
+                    f"{latest_patch['installed_on']} ({patch_age_days} days ago). This satisfies the "
+                    f"{config.patch_max_age_days_pass}-day patch-currency baseline."
                 ),
                 recommended_remediation="Maintain scheduled monthly patch cycle (Patch Tuesday).",
-                verification_limitations="Evaluates installed hotfix entries reported by CBS/WUA. Does not scan for uninstalled pending updates.",
+                verification_limitations=(
+                    "Evaluates installed hotfix entries reported by Component-Based Servicing (CBS). "
+                    "Does not check for pending, uninstalled updates against Microsoft catalogs, WSUS, or Intune."
+                ),
+                short_finding=f"Most recently recorded hotfix ({latest_patch['hotfix_id']}) installed {patch_age_days} days ago.",
+                impact="Regular monthly patching resolves known security flaws, mitigating public exploit techniques.",
+                suggested_verification="Periodically review installed updates via 'Get-HotFix' or Windows Update settings.",
             )
 
         if patch_age_days <= config.patch_max_age_days_review:
@@ -213,15 +221,17 @@ class WindowsUpdateCheck(BaseCheck):
                 expected_requirement=expected_req,
                 risk_level=RiskLevel.MEDIUM,
                 explanation=(
-                    f"Latest verified security update ({latest_patch['hotfix_id']}) was installed on "
+                    f"Most recently recorded hotfix is {latest_patch['hotfix_id']}, installed on "
                     f"{latest_patch['installed_on']} ({patch_age_days} days ago). "
                     f"This exceeds the {config.patch_max_age_days_pass}-day target but is under {config.patch_max_age_days_review} days."
                 ),
                 recommended_remediation="Review pending Windows updates and initiate patch deployment.",
-                verification_limitations="Evaluates installed hotfix records only.",
+                verification_limitations="Evaluates installed hotfix records reported by Component-Based Servicing.",
+                short_finding=f"Most recently recorded hotfix ({latest_patch['hotfix_id']}) is {patch_age_days} days old (exceeds {config.patch_max_age_days_pass}-day baseline).",
+                impact="Patch latency exposes the system to vulnerabilities disclosed within the preceding 60 to 90 days.",
+                suggested_verification="Check Settings -> Windows Update for pending quality updates.",
             )
 
-        # Older than 90 days
         return Finding(
             check_id=self.check_id,
             control_name=self.control_name,
@@ -230,10 +240,13 @@ class WindowsUpdateCheck(BaseCheck):
             expected_requirement=expected_req,
             risk_level=RiskLevel.HIGH,
             explanation=(
-                f"Patching cadence is significantly delayed: latest recorded patch ({latest_patch['hotfix_id']}) "
+                f"Patching cadence is significantly delayed: most recently recorded hotfix ({latest_patch['hotfix_id']}) "
                 f"was installed {patch_age_days} days ago ({latest_patch['installed_on']}). "
-                "Outdated operating systems are exposed to known security vulnerabilities."
+                "Systems lacking recent cumulative updates are vulnerable to publicly known security flaws."
             ),
             recommended_remediation="Immediately scan for, test, and apply missing Windows security updates.",
             verification_limitations="Evaluates installed hotfix records reported by Component-Based Servicing.",
+            short_finding=f"Patching cadence significantly delayed: latest hotfix is {patch_age_days} days old.",
+            impact="Unpatched systems are exposed to known exploited vulnerabilities (KEVs) and automated exploit kits.",
+            suggested_verification="Run Windows Update and confirm pending cumulative updates are installed.",
         )
